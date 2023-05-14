@@ -41,8 +41,8 @@ fi
 cargo test
 ~~~
 
-## gg_test (test)
-> Runs Gossip Glomers test
+## gg_test_echo
+> Runs Gossip Glomers test `echo`
 
 **OPTIONS**
 * maelstrom
@@ -57,5 +57,24 @@ cargo test
 ~~~bash
 m_bin="${maelstrom:-../maelstrom/maelstrom}"
 t_bin="${bin:-$($MASK get-bin --build)}"
-"$m_bin" test -w "$test" --bin "$t_bin" --node-count 1 --time-limit 10
+"$m_bin" test -w echo --bin "$t_bin" --node-count 1 --time-limit 10
+~~~
+
+## gg_test_unique
+> Runs Gossip Glomers `unique-ids`
+
+**OPTIONS**
+* maelstrom
+    * flags: -m --maelstrom
+    * type: string
+    * desc: Path to binary of Maelstrom
+* bin
+    * flags: --bin
+    * type: string
+    * desc: Path to binary to test (defaults to default binary from `get-bin`)
+
+~~~bash
+m_bin="${maelstrom:-../maelstrom/maelstrom}"
+t_bin="${bin:-$($MASK get-bin --build)}"
+"$m_bin" test -w unique-ids --bin "$t_bin" --time-limit 30 --rate 1000 --node-count 3 --availability total --nemesis partition
 ~~~

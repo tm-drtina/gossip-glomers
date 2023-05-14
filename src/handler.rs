@@ -9,13 +9,15 @@ use crate::message::{Envelope, Request, Response};
 pub struct Handler<'a, R: Read, W: Write> {
     reader: StreamDeserializer<'a, IoRead<R>, Envelope<Request>>,
     writer: W,
+    id_generator: ulid::Generator,
 }
 
 impl<'a, R: Read, W: Write> Handler<'a, R, W> {
     pub fn new(reader: R, writer: W) -> Self {
         let reader = Deserializer::from_reader(reader).into_iter();
+        let id_generator = ulid::Generator::default();
 
-        Self { reader, writer }
+        Self { reader, writer, id_generator }
     }
 
     pub fn read_msg(&mut self) -> Option<Result<()>> {
@@ -47,6 +49,16 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
                 };
                 let envelope = Envelope::reply_to(msg.header, res);
                 self.write_output(&envelope)?;
+            }
+            Request::Generate { msg_id } => {
+                let id = self.id_generator.generate()?;
+                let res = Response::GenerateOk {
+                    msg_id: 1,
+                    in_reply_to: msg_id,
+                    id,
+                };
+                let envelope = Envelope::reply_to(msg.header, res);
+                self.write_output(&envelope)?;               
             }
         }
         Ok(())

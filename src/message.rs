@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use ulid::Ulid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Envelope<B> {
@@ -44,6 +45,9 @@ pub enum Request {
         msg_id: usize,
         echo: String,
     },
+    Generate {
+        msg_id: usize,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -56,5 +60,10 @@ pub enum Response {
         msg_id: usize,
         in_reply_to: usize,
         echo: String,
+    },
+    GenerateOk {
+        msg_id: usize,
+        in_reply_to: usize,
+        id: Ulid,
     },
 }
