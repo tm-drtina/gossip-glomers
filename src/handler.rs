@@ -5,19 +5,27 @@ use serde_json::de::IoRead;
 use serde_json::{Deserializer, StreamDeserializer};
 
 use crate::message::{Envelope, Request, Response};
+use crate::state::State;
 
 pub struct Handler<'a, R: Read, W: Write> {
     reader: StreamDeserializer<'a, IoRead<R>, Envelope<Request>>,
     writer: W,
     id_generator: ulid::Generator,
+    state: State,
 }
 
 impl<'a, R: Read, W: Write> Handler<'a, R, W> {
     pub fn new(reader: R, writer: W) -> Self {
         let reader = Deserializer::from_reader(reader).into_iter();
         let id_generator = ulid::Generator::default();
+        let state = State::new();
 
-        Self { reader, writer, id_generator }
+        Self {
+            reader,
+            writer,
+            id_generator,
+            state,
+        }
     }
 
     pub fn read_msg(&mut self) -> Option<Result<()>> {
@@ -58,7 +66,36 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
                     id,
                 };
                 let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;               
+                self.write_output(&envelope)?;
+            }
+            Request::Broadcast { msg_id, message } => {
+                self.state.receive(message);
+                let res = Response::BroadcastOk {
+                    msg_id: 1,
+                    in_reply_to: msg_id,
+                };
+                let envelope = Envelope::reply_to(msg.header, res);
+                self.write_output(&envelope)?;
+            }
+            Request::Read { msg_id } => {
+                let res = Response::ReadOk {
+                    msg_id: 1,
+                    in_reply_to: msg_id,
+                    messages: self.state.seen(),
+                };
+                let envelope = Envelope::reply_to(msg.header, res);
+                self.write_output(&envelope)?;
+            }
+            Request::Topology {
+                msg_id,
+                topology: _,
+            } => {
+                let res = Response::TopologyOk {
+                    msg_id: 1,
+                    in_reply_to: msg_id,
+                };
+                let envelope = Envelope::reply_to(msg.header, res);
+                self.write_output(&envelope)?;
             }
         }
         Ok(())
@@ -66,7 +103,7 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
 
     fn write_output(&mut self, value: &Envelope<Response>) -> Result<()> {
         serde_json::to_writer(&mut self.writer, value)?;
-        self.writer.write(b"\n")?;
+        self.writer.write_all(b"\n")?;
         Ok(())
     }
 }

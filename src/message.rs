@@ -1,5 +1,9 @@
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
+
+pub type MessageType = usize;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Envelope<B> {
@@ -48,6 +52,17 @@ pub enum Request {
     Generate {
         msg_id: usize,
     },
+    Broadcast {
+        msg_id: usize,
+        message: MessageType,
+    },
+    Read {
+        msg_id: usize,
+    },
+    Topology {
+        msg_id: usize,
+        topology: HashMap<String, HashSet<String>>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -65,5 +80,18 @@ pub enum Response {
         msg_id: usize,
         in_reply_to: usize,
         id: Ulid,
+    },
+    BroadcastOk {
+        msg_id: usize,
+        in_reply_to: usize,
+    },
+    ReadOk {
+        msg_id: usize,
+        in_reply_to: usize,
+        messages: HashSet<MessageType>,
+    },
+    TopologyOk {
+        msg_id: usize,
+        in_reply_to: usize,
     },
 }
