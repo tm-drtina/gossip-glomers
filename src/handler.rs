@@ -1,30 +1,31 @@
 use std::io::{Read, Write};
 
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 use serde_json::de::IoRead;
 use serde_json::{Deserializer, StreamDeserializer};
 
-use crate::message::{Envelope, Request, Response};
+use crate::message::{Envelope, Header, MaelstromMessage, Payload};
 use crate::state::State;
 
 pub struct Handler<'a, R: Read, W: Write> {
-    reader: StreamDeserializer<'a, IoRead<R>, Envelope<Request>>,
+    reader: StreamDeserializer<'a, IoRead<R>, MaelstromMessage>,
     writer: W,
     id_generator: ulid::Generator,
-    state: State,
+    state: Option<State>,
+    next_id: usize,
 }
 
 impl<'a, R: Read, W: Write> Handler<'a, R, W> {
     pub fn new(reader: R, writer: W) -> Self {
         let reader = Deserializer::from_reader(reader).into_iter();
         let id_generator = ulid::Generator::default();
-        let state = State::new();
 
         Self {
             reader,
             writer,
             id_generator,
-            state,
+            state: None,
+            next_id: 1,
         }
     }
 
@@ -32,78 +33,105 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
         match self.reader.next() {
             None => None,
             Some(Err(err)) => Some(Err(err.into())),
-            Some(Ok(msg)) => Some(self.handle_msg(msg)),
+            Some(Ok(msg)) => Some(self.handle_msg(msg.into())),
         }
     }
 
-    fn handle_msg(&mut self, msg: Envelope<Request>) -> Result<()> {
-        match msg.body {
-            Request::Init {
-                msg_id,
-                node_id: _,
-                node_ids: _,
-            } => {
-                let res = Response::InitOk {
-                    in_reply_to: msg_id,
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
+    fn get_id(&mut self) -> Option<usize> {
+        let id = self.next_id;
+        self.next_id += 1;
+        Some(id)
+    }
+
+    fn header_to(&mut self, recipient: String) -> Result<Header> {
+        Ok(Header {
+            src: self.get_state()?.node_id.clone(),
+            dst: recipient,
+            id: self.get_id(),
+            in_reply_to: None,
+        })
+    }
+
+    fn get_state(&self) -> Result<&State> {
+        self.state
+            .as_ref()
+            .ok_or(anyhow!("state must be initialized"))
+    }
+    fn get_state_mut(&mut self) -> Result<&mut State> {
+        self.state
+            .as_mut()
+            .ok_or(anyhow!("state must be initialized"))
+    }
+
+    fn handle_msg(&mut self, envelope: Envelope) -> Result<()> {
+        let Envelope { header, payload } = envelope;
+
+        match payload {
+            Payload::Init { node_id, node_ids } => {
+                self.state = Some(State::new(node_id, node_ids));
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::InitOk)
+                    .write_output(&mut self.writer)?;
             }
-            Request::Echo { msg_id, echo } => {
-                let res = Response::EchoOk {
-                    msg_id: 1,
-                    in_reply_to: msg_id,
-                    echo,
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
+            Payload::Echo { echo } => {
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::EchoOk { echo })
+                    .write_output(&mut self.writer)?;
             }
-            Request::Generate { msg_id } => {
+            Payload::Generate => {
                 let id = self.id_generator.generate()?;
-                let res = Response::GenerateOk {
-                    msg_id: 1,
-                    in_reply_to: msg_id,
-                    id,
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::GenerateOk { id })
+                    .write_output(&mut self.writer)?;
             }
-            Request::Broadcast { msg_id, message } => {
-                self.state.receive(message);
-                let res = Response::BroadcastOk {
-                    msg_id: 1,
-                    in_reply_to: msg_id,
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
-            }
-            Request::Read { msg_id } => {
-                let res = Response::ReadOk {
-                    msg_id: 1,
-                    in_reply_to: msg_id,
-                    messages: self.state.seen(),
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
-            }
-            Request::Topology {
-                msg_id,
-                topology: _,
-            } => {
-                let res = Response::TopologyOk {
-                    msg_id: 1,
-                    in_reply_to: msg_id,
-                };
-                let envelope = Envelope::reply_to(msg.header, res);
-                self.write_output(&envelope)?;
-            }
-        }
-        Ok(())
-    }
+            Payload::Broadcast { message } => {
+                let distribute = self.get_state_mut()?.receive(&header.src, message);
 
-    fn write_output(&mut self, value: &Envelope<Response>) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, value)?;
-        self.writer.write_all(b"\n")?;
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::BroadcastOk)
+                    .write_output(&mut self.writer)?;
+
+                for (recipient, message) in distribute {
+                    self.header_to(recipient)?
+                        .with_payload(Payload::Broadcast { message })
+                        .write_output(&mut self.writer)?;
+                }
+            }
+            Payload::Read => {
+                let messages = self.get_state()?.seen();
+
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::ReadOk { messages })
+                    .write_output(&mut self.writer)?;
+            }
+            Payload::Topology { topology } => {
+                self.state
+                    .as_mut()
+                    .ok_or(anyhow!("State must be initalized"))?
+                    .set_topology(topology);
+
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::TopologyOk)
+                    .write_output(&mut self.writer)?;
+            }
+            Payload::BroadcastOk => {
+                // TODO: mark as delivered
+            }
+            Payload::ReadOk { messages } => {
+                let _ = messages;
+                todo!();
+            }
+            Payload::InitOk { .. } => bail!("Did not expect InitOk message"),
+            Payload::TopologyOk { .. } => bail!("Did not expect TopologyOk message"),
+            Payload::EchoOk { .. } => bail!("Did not expect EchoOk message"),
+            Payload::GenerateOk { .. } => bail!("Did not expect GenerateOk message"),
+        }
         Ok(())
     }
 }

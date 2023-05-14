@@ -100,3 +100,22 @@ m_bin="${maelstrom:-../maelstrom/maelstrom}"
 t_bin="${bin:-$($MASK get-bin --build)}"
 "$m_bin" test -w broadcast --bin "$t_bin" --node-count 1 --time-limit 20 --rate 10
 ~~~
+
+### 3b
+> Runs Gossip Glomers `broadcast` 3b
+
+**OPTIONS**
+* maelstrom
+    * flags: -m --maelstrom
+    * type: string
+    * desc: Path to binary of Maelstrom
+* bin
+    * flags: --bin
+    * type: string
+    * desc: Path to binary to test (defaults to default binary from `get-bin`)
+
+~~~bash
+m_bin="${maelstrom:-../maelstrom/maelstrom}"
+t_bin="${bin:-$($MASK get-bin --build)}"
+"$m_bin" test -w broadcast --bin "$t_bin" --node-count 5 --time-limit 20 --rate 10
+~~~
