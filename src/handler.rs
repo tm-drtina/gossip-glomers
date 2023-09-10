@@ -1,27 +1,26 @@
-use std::io::{Read, Write};
+use std::io::Write;
+use std::sync::mpsc::Receiver;
 
 use anyhow::{anyhow, bail, Result};
-use serde_json::de::IoRead;
-use serde_json::{Deserializer, StreamDeserializer};
 
-use crate::message::{Envelope, Header, MaelstromMessage, Payload};
+use crate::event::Event;
+use crate::message::{Envelope, Header, Payload};
 use crate::state::State;
 
-pub struct Handler<'a, R: Read, W: Write> {
-    reader: StreamDeserializer<'a, IoRead<R>, MaelstromMessage>,
+pub struct Handler<W: Write> {
+    receiver: Receiver<Event>,
     writer: W,
     id_generator: ulid::Generator,
     state: Option<State>,
     next_id: usize,
 }
 
-impl<'a, R: Read, W: Write> Handler<'a, R, W> {
-    pub fn new(reader: R, writer: W) -> Self {
-        let reader = Deserializer::from_reader(reader).into_iter();
+impl<W: Write> Handler<W> {
+    pub fn new(receiver: Receiver<Event>, writer: W) -> Self {
         let id_generator = ulid::Generator::default();
 
         Self {
-            reader,
+            receiver,
             writer,
             id_generator,
             state: None,
@@ -29,12 +28,14 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
         }
     }
 
-    pub fn read_msg(&mut self) -> Option<Result<()>> {
-        match self.reader.next() {
-            None => None,
-            Some(Err(err)) => Some(Err(err.into())),
-            Some(Ok(msg)) => Some(self.handle_msg(msg.into())),
+    pub fn processing_loop(mut self) -> Result<()> {
+        while let Ok(event) = self.receiver.recv() {
+            match event {
+                Event::Message(envelope) => self.handle_msg(envelope)?,
+                Event::Timer => self.handle_timer()?,
+            }
         }
+        Ok(())
     }
 
     fn get_id(&mut self) -> Option<usize> {
@@ -63,6 +64,15 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
             .ok_or(anyhow!("state must be initialized"))
     }
 
+    fn handle_timer(&mut self) -> Result<()> {
+        for (recipient, data) in self.get_state()?.gossip_data() {
+            self.header_to(recipient)?
+                .with_payload(Payload::Gossip { seen: data.clone() })
+                .write_output(&mut self.writer)?;
+        }
+        Ok(())
+    }
+
     fn handle_msg(&mut self, envelope: Envelope) -> Result<()> {
         let Envelope { header, payload } = envelope;
 
@@ -88,18 +98,12 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
                     .write_output(&mut self.writer)?;
             }
             Payload::Broadcast { message } => {
-                let distribute = self.get_state_mut()?.receive(&header.src, message);
+                self.get_state_mut()?.receive(message);
 
                 header
                     .reply(self.get_id())
                     .with_payload(Payload::BroadcastOk)
                     .write_output(&mut self.writer)?;
-
-                for (recipient, message) in distribute {
-                    self.header_to(recipient)?
-                        .with_payload(Payload::Broadcast { message })
-                        .write_output(&mut self.writer)?;
-                }
             }
             Payload::Read => {
                 let messages = self.get_state()?.seen();
@@ -113,98 +117,33 @@ impl<'a, R: Read, W: Write> Handler<'a, R, W> {
                 self.state
                     .as_mut()
                     .ok_or(anyhow!("State must be initalized"))?
-                    .set_topology(topology);
+                    .set_topology(topology)?;
 
                 header
                     .reply(self.get_id())
                     .with_payload(Payload::TopologyOk)
                     .write_output(&mut self.writer)?;
             }
-            Payload::BroadcastOk => {
-                // TODO: mark as delivered
+            Payload::Gossip { seen } => {
+                for message in &seen {
+                    self.get_state_mut()?.receive(*message);
+                }
+
+                header
+                    .reply(self.get_id())
+                    .with_payload(Payload::GossipOk { seen })
+                    .write_output(&mut self.writer)?;
             }
-            Payload::ReadOk { messages } => {
-                let _ = messages;
-                todo!();
+            Payload::GossipOk { seen } => {
+                self.get_state_mut()?.confirm_gossip(&header.src, seen)?;
             }
-            Payload::InitOk { .. } => bail!("Did not expect InitOk message"),
-            Payload::TopologyOk { .. } => bail!("Did not expect TopologyOk message"),
+            Payload::BroadcastOk => bail!("Did not expect BroadcastOk message"),
+            Payload::ReadOk { .. } => bail!("Did not expect ReadOk message"),
+            Payload::InitOk => bail!("Did not expect InitOk message"),
+            Payload::TopologyOk => bail!("Did not expect TopologyOk message"),
             Payload::EchoOk { .. } => bail!("Did not expect EchoOk message"),
             Payload::GenerateOk { .. } => bail!("Did not expect GenerateOk message"),
         }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::assert_eq;
-
-    use crate::handler::Handler;
-
-    use anyhow::Result;
-
-    #[test]
-    fn test_init() -> Result<()> {
-        let src = "c1";
-        let dst = "n1";
-        let req_id = 1;
-
-        let input = format!(
-            r#"{{"src": "{src}", "dest": "{dst}", "body": {{"type": "init", "msg_id": {req_id}, "node_id":  "n3", "node_ids": ["n1", "n2", "n3"]}}}}
-"#
-        );
-        let mut output = Vec::new();
-        let mut handler = Handler::new(input.as_bytes(), &mut output);
-
-        let res = handler.read_msg();
-        assert!(res.is_some());
-        let _ = res.unwrap()?;
-        assert!(handler.read_msg().is_none());
-
-        assert_eq!(
-            std::str::from_utf8(&output)?,
-            format!(
-                r#"{{"src":"{dst}","dest":"{src}","body":{{"type":"init_ok","in_reply_to":{req_id}}}}}
-"#
-            )
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_echo() -> Result<()> {
-        let src = "c1";
-        let dst = "n1";
-        let req_id = 1;
-        let res_id = 1;
-        let echo = "Please echo 35";
-
-        let input = format!(
-            r#"{{"src": "{src}", "dest": "{dst}", "body": {{"type": "init", "msg_id": {req_id}, "node_id":  "n3", "node_ids": ["n1", "n2", "n3"]}}}}
-{{"src": "{src}", "dest": "{dst}", "body": {{"type": "echo", "msg_id": {req_id}, "echo": "{echo}"}}}}
-"#
-        );
-        let mut output = Vec::new();
-        let mut handler = Handler::new(input.as_bytes(), &mut output);
-
-        for _ in 0..2 {
-            let res = handler.read_msg();
-            assert!(res.is_some());
-            let _ = res.unwrap()?;
-        }
-        assert!(handler.read_msg().is_none());
-
-        assert_eq!(
-            std::str::from_utf8(&output)?,
-            format!(
-                r#"{{"src":"{dst}","dest":"{src}","body":{{"type":"init_ok","in_reply_to":{req_id}}}}}
-{{"src":"{dst}","dest":"{src}","body":{{"type":"echo_ok","msg_id":{res_id},"in_reply_to":{req_id},"echo":"{echo}"}}}}
-"#
-            )
-        );
-
         Ok(())
     }
 }

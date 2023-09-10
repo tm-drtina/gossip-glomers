@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
@@ -29,10 +29,16 @@ pub enum Payload {
     BroadcastOk,
     Read,
     ReadOk {
-        messages: HashSet<MessageType>,
+        messages: Vec<MessageType>,
     },
     Topology {
-        topology: HashMap<String, Vec<String>>,
+        topology: BTreeMap<String, Vec<String>>,
     },
     TopologyOk,
+    Gossip {
+        seen: Vec<usize>,
+    },
+    GossipOk {
+        seen: Vec<usize>,
+    },
 }

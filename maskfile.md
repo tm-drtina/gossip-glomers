@@ -119,3 +119,48 @@ m_bin="${maelstrom:-../maelstrom/maelstrom}"
 t_bin="${bin:-$($MASK get-bin --build)}"
 "$m_bin" test -w broadcast --bin "$t_bin" --node-count 5 --time-limit 20 --rate 10
 ~~~
+
+### 3c
+> Runs Gossip Glomers `broadcast` 3c
+
+**OPTIONS**
+* maelstrom
+    * flags: -m --maelstrom
+    * type: string
+    * desc: Path to binary of Maelstrom
+* bin
+    * flags: --bin
+    * type: string
+    * desc: Path to binary to test (defaults to default binary from `get-bin`)
+
+~~~bash
+m_bin="${maelstrom:-../maelstrom/maelstrom}"
+t_bin="${bin:-$($MASK get-bin --build)}"
+"$m_bin" test -w broadcast --bin "$t_bin" --node-count 5 --time-limit 20 --rate 10 --nemesis partition
+~~~
+
+### 3d
+> Runs Gossip Glomers `broadcast` 3d and 3e since they share command
+
+**OPTIONS**
+* maelstrom
+    * flags: -m --maelstrom
+    * type: string
+    * desc: Path to binary of Maelstrom
+* bin
+    * flags: --bin
+    * type: string
+    * desc: Path to binary to test (defaults to default binary from `get-bin`)
+* nemesis
+    * flags: --nemesis
+    * desc: Adds nemesis to verify fault tolerancy
+
+~~~bash
+m_bin="${maelstrom:-../maelstrom/maelstrom}"
+t_bin="${bin:-$($MASK get-bin --build)}"
+if [[ "$nemesis" == "true" ]]; then
+    "$m_bin" test -w broadcast --bin "$t_bin" --node-count 25 --time-limit 20 --rate 100 --latency 100 --nemesis partition
+else
+    "$m_bin" test -w broadcast --bin "$t_bin" --node-count 25 --time-limit 20 --rate 100 --latency 100
+fi
+~~~
